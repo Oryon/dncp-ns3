@@ -1,0 +1,7 @@
+# -*- Mode: python; py-indent-offset: 4; indent-tabs-mode: nil; coding: utf-8; -*-
+
+def build(bld):
+    return
+#    obj = bld.create_ns3_program('dncp-example', ['dncp'])
+#    obj.source = 'dncp-example.cc'
+
