@@ -128,32 +128,186 @@ void DncpApplication::DncpScheduleTimeout(dncp_ext ext, int msecs)
 
 NS_OBJECT_ENSURE_REGISTERED (DncpApplication);
 
-TypeId DncpApplication::GetTypeId (void)
+void DncpApplication::DncpScheduleTimeout(int msecs)
 {
-	static TypeId t = TypeId("ns3::DncpApplication").SetParent<Application>()
-	.AddConstructor<DncpApplication>()
-	.AddTraceSource ("NetworkHash",
-	                 "the network hash value calculated by this node",
-	                 MakeTraceSourceAccessor (&DncpApplication::m_net_hash),
-					 "ns3::DncpApplication::TracedDouble")
-	.AddTraceSource("PktRx",
-					"Trace source indicating a packet was received",
-					MakeTraceSourceAccessor(&DncpApplication::m_packetRxTrace),
-					"ns3::DncpApplication::DncpCallback")
-	.AddTraceSource("PktTx",
-					"Trace source indicating a packet was sent",
-					MakeTraceSourceAccessor(&DncpApplication::m_packetTxTrace),
-					"ns3::DncpApplication::DncpCallback");
-	return t;
+	NS_LOG_FUNCTION (this<<msecs);
+	if(!m_timeoutEvent.IsRunning())
+		m_timeoutEvent=Simulator::Schedule(MilliSeconds(msecs), &DncpApplication::DncpTimeout, this);
 }
 
-DncpApplication::DncpApplication()
-  : m_socket6 (0),
-    m_timeoutEvent (),
-    m_running (true),
-    m_packetsSent (0)
+void DncpApplication::DncpTimeout()
+{
+	NS_LOG_FUNCTION (this);
+	if (m_running) {
+		 dncp_ext_timeout(m_dncp);
+		 m_net_hash = *((uint64_t *)&m_dncp->network_hash);
+	}
+}
+
+DncpPacket::DncpPacket(Ptr<Packet> p, Time t, Address f):
+m_packet(p),
+m_delivery_time(t),
+m_from(f)
+{
+
+}
+
+void DncpApplication::RecvFromDevice(Ptr<Socket> socket)
 {
 	NS_LOG_FUNCTION(this);
+
+	Address from;
+	Ptr<Packet> p;
+	while ((p = m_socket6->RecvFrom(from))) {
+		DncpPacket *packet = new DncpPacket(p, ns3::Simulator::Now() + m_processing_delay, from);
+		m_packets.push_back(packet);
+		NS_LOG_DEBUG("Pushing packet to queue at " << ns3::Simulator::Now() <<
+				" for retrieval at " << packet->m_delivery_time);
+		if(!m_readEvent.IsRunning())
+			m_readEvent = Simulator::Schedule(m_processing_delay, &DncpApplication::HandleRead,this);
+	}
+}
+
+void DncpApplication::HandleRead ()
+{
+	NS_LOG_FUNCTION(this);
+	dncp_ext_readable(m_dncp);
+}
+
+void DncpApplication::DncpSendTo(int Ifindex,struct sockaddr_in6 *src,
+		struct sockaddr_in6 *dst, void *buf, size_t len)
+{
+	NS_LOG_FUNCTION (this<<m_dncp);
+	if(!m_running)
+		return;
+
+	Ptr<Packet> packet = Create<Packet> (static_cast<uint8_t *>(buf), len);
+	Ipv6Address dstAddr = Ipv6Address(reinterpret_cast<uint8_t *>(dst?(&dst->sin6_addr):(&this->m_multicast_address)));
+	m_socket6->SendTo (packet,0,Inet6SocketAddress(dstAddr, HNCP_PORT),GetNode()->GetDevice (Ifindex));
+
+	NS_LOG_INFO ("At time " <<Simulator::Now ().GetSeconds () << "s Node "<<GetNode()->GetId()<<" sent " << len << " bytes to "
+			<<dstAddr <<" through interface "<< Ifindex);
+
+	Ptr<Ipv6> ipv6 = GetNode()->GetObject<Ipv6>();
+	m_packetTxTrace(GetNode(), GetNode()->GetDevice(Ifindex), packet,
+			ipv6->GetAddress(ipv6->GetInterfaceForDevice(GetNode()->GetDevice(Ifindex)),0).GetAddress(),
+			Ipv6Address::ConvertFrom(dstAddr));
+}
+
+ssize_t DncpApplication::DncpRecvFrom(void *buf, size_t len,  dncp_ep *ep,
+						struct sockaddr_in6 *src, struct sockaddr_in6 *dst)
+{
+	NS_LOG_FUNCTION (this<<m_dncp);
+
+	DncpPacket *packet;
+	Time now = Simulator::Now();
+	while (!m_packets.empty() && (packet = m_packets.front())->m_delivery_time <= now ) {
+		NS_LOG_ERROR("Delivering packet at "<< now << " scheduled at "<< packet->m_delivery_time);
+
+		m_packets.pop_front();
+
+		if(m_readEvent.IsRunning())
+			m_readEvent.Cancel();
+
+		if(!m_packets.empty()) {
+			if(now >= m_packets.front()->m_delivery_time) {
+				m_readEvent = Simulator::Schedule(MicroSeconds(1), & DncpApplication::HandleRead,this);
+				NS_LOG_DEBUG("Next read event in 1 us");
+			} else {
+				m_readEvent = Simulator::Schedule(m_packets.front()->m_delivery_time - now, & DncpApplication::HandleRead,this);
+				NS_LOG_DEBUG("Next read event in " << m_packets.front()->m_delivery_time - now);
+			}
+		}
+
+		if (!Inet6SocketAddress::IsMatchingType(packet->m_from)) {
+			NS_LOG_WARN("IPv4 packet received in DNCP");
+			continue;
+		}
+		Inet6SocketAddress from6 = Inet6SocketAddress::ConvertFrom(packet->m_from);
+
+		uint32_t incomingIf;
+		uint32_t pktSize;
+
+		/*Get incoming interface index*/
+		Ipv6PacketInfoTag pktInfo;
+		if (!packet->m_packet->RemovePacketTag (pktInfo)) {
+			NS_LOG_ERROR("No incoming interface on RIPng message, aborting.");
+			continue;
+		}
+
+		//Get interface
+		incomingIf = pktInfo.GetRecvIf();
+		char ifname[IFNAMSIZ];
+		std::sprintf(ifname,"%d",incomingIf);
+		*ep = dncp_find_ep_by_name(m_dncp, ifname);
+		if (!*ep)
+			continue;
+
+		/*Get packet size*/
+		pktSize=packet->m_packet->GetSize();
+
+		//Source address
+		from6.GetIpv6().GetBytes(reinterpret_cast<uint8_t *>(&src->sin6_addr));
+		src->sin6_family = AF_INET6;
+		src->sin6_port = htons(from6.GetPort());
+		src->sin6_scope_id = 0;
+
+		//Destination address
+		pktInfo.GetAddress().GetBytes(reinterpret_cast<uint8_t *>(&dst->sin6_addr));
+		dst->sin6_family = AF_INET6;
+		dst->sin6_port = htons(HNCP_PORT);
+		dst->sin6_scope_id = incomingIf;
+
+		//dump packet to the buffer
+		packet->m_packet->CopyData(static_cast<uint8_t*>(buf), pktSize);
+
+		//struct tlv_attr *msg =container_of(static_cast<char(*)[0]>(buf), tlv_attr, data);
+		NS_LOG_INFO("At time " << Simulator::Now ().GetSeconds () << "s Node "<<GetNode()->GetId()<<
+				" received " << pktSize<< " bytes ["<<from6.GetIpv6() <<" -> "<<pktInfo.GetAddress()<<
+				"] through interface "<<incomingIf);
+
+		m_packetRxTrace(GetNode(), GetNode()->GetDevice(incomingIf),
+				packet->m_packet, from6.GetIpv6(), pktInfo.GetAddress());
+
+		delete packet;
+		return pktSize;
+	}
+	return -1;
+}
+
+void DncpApplication::StartApplication(void)
+{
+	NS_LOG_FUNCTION (this);
+	if (!this->DncpInit()) {
+		NS_LOG_ERROR ("can not initiate dncp");
+		return;
+	}
+
+	m_running = true;
+	int num = this->GetNode()->GetNDevices();
+	for(int i=1; i<num; i++){
+		NS_LOG_FUNCTION (this<<i<<1);
+		char ifname[IFNAMSIZ];
+		std::sprintf(ifname,"%d",i);
+		dncp_ep ep;
+		if((ep = dncp_find_ep_by_name(m_dncp, ifname)) && !dncp_ep_is_enabled(ep))
+			dncp_ext_ep_ready(ep, 1);
+		else
+			NS_LOG_ERROR("unable to enable endpoint "<< ifname);
+	}
+}
+
+void DncpApplication::StopApplication(void)
+{
+	NS_LOG_FUNCTION (this);
+	this->DncpUninit();
+	NS_LOG_INFO("At time " <<Simulator::Now ().GetSeconds () << "s Node "<<GetNode()->GetId()<<" stopped, " <<m_packetsSent
+			<<" packets sent in total");
+}
+
+void DncpApplication::SetQueueProperties(Time processing_delay)
+{
+	m_processing_delay = processing_delay;
 }
 
 DncpApplication::~DncpApplication()
@@ -197,72 +351,11 @@ bool DncpApplication::DncpInit()
 	}
 
 	m_socket6 = Socket::CreateSocket(GetNode(), TypeId::LookupByName("ns3::UdpSocketFactory"));
-	Inet6SocketAddress local6 = Inet6SocketAddress(Ipv6Address::GetAny(), HNCP_PORT);
-	m_socket6->Bind(local6);
+	m_socket6->Bind(Inet6SocketAddress(Ipv6Address::GetAny(), HNCP_PORT));
 	m_socket6->SetRecvPktInfo(true);
-	m_socket6->SetRecvCallback(MakeCallback(&DncpApplication::ScheduleRead, this));
+	m_socket6->SetRecvCallback(MakeCallback(&DncpApplication::RecvFromDevice, this));
 
 	return !!(m_dncp = dncp_create(&m_ext_s.ext));
-}
-
-void DncpApplication::DncpScheduleTimeout(int msecs)
-{
-	NS_LOG_FUNCTION (this<<msecs);
-	if(!m_timeoutEvent.IsRunning())
-		m_timeoutEvent=Simulator::Schedule(MilliSeconds(msecs), &DncpApplication::DncpTimeout, this);
-}
-
-void DncpApplication::DncpTimeout()
-{
-	NS_LOG_FUNCTION (this);
-	if (m_running) {
-		 dncp_ext_timeout(m_dncp);
-		 m_net_hash = *((uint64_t *)&m_dncp->network_hash);
-	}
-}
-
-void DncpApplication::StartApplication(void)
-{
-	NS_LOG_FUNCTION (this);
-	if (!this->DncpInit()) {
-		NS_LOG_ERROR ("can not initiate dncp");
-		return;
-	}
-
-	m_running = true;
-	int num = this->GetNode()->GetNDevices();
-	for(int i=1; i<num; i++){
-		NS_LOG_FUNCTION (this<<i<<1);
-		char ifname[IFNAMSIZ];
-		std::sprintf(ifname,"%d",i);
-		dncp_ep ep = dncp_find_ep_by_name(m_dncp, ifname);
-
-		if(ep && !dncp_ep_is_enabled(ep))
-			dncp_ext_ep_ready(ep, 1);
-		else
-			NS_LOG_ERROR("unable to enable endpoint "<< ifname);
-	}
-}
-
-void DncpApplication::StopApplication(void)
-{
-	NS_LOG_FUNCTION (this);
-	this->DncpUninit();
-	NS_LOG_INFO("At time " <<Simulator::Now ().GetSeconds () << "s Node "<<GetNode()->GetId()<<" stopped, " <<m_packetsSent
-			<<" packets sent in total");
-}
-
-void DncpApplication::ScheduleRead(Ptr<Socket> socket)
-{
-	NS_LOG_FUNCTION(this);
-	if(!m_readEvent.IsRunning())
-		m_readEvent=Simulator::Schedule(MilliSeconds(0.5), & DncpApplication::HandleRead,this);
-}
-
-void DncpApplication::HandleRead ()
-{
-	NS_LOG_FUNCTION(this);
-	dncp_ext_readable(m_dncp);
 }
 
 void DncpApplication::DncpUninit()
@@ -282,87 +375,33 @@ void DncpApplication::DncpUninit()
 	}
 }
 
-
-void DncpApplication::DncpSendTo(int Ifindex,struct sockaddr_in6 *src,
-		struct sockaddr_in6 *dst, void *buf, size_t len)
+TypeId DncpApplication::GetTypeId (void)
 {
-	NS_LOG_FUNCTION (this<<m_dncp);
-	if(!m_running)
-		return;
-
-	Ptr<Packet> packet = Create<Packet> (static_cast<uint8_t *>(buf),len);
-	Ipv6Address dstAddr = Ipv6Address(reinterpret_cast<uint8_t *>(dst?(&dst->sin6_addr):(&this->m_multicast_address)));
-	m_socket6->SendTo (packet,0,Inet6SocketAddress(dstAddr, HNCP_PORT),GetNode()->GetDevice (Ifindex));
-
-	NS_LOG_INFO ("At time " <<Simulator::Now ().GetSeconds () << "s Node "<<GetNode()->GetId()<<" sent " << len << " bytes to "
-			<<dstAddr <<" through interface "<< Ifindex);
-
-	Ptr<Ipv6> ipv6 = GetNode()->GetObject<Ipv6> ();
-	struct tlv_attr *msg =container_of(static_cast<char(*)[0]>(buf), tlv_attr, data);
-	m_packetTxTrace(ipv6->GetAddress(ipv6->GetInterfaceForDevice(GetNode()->GetDevice (Ifindex)),0).GetAddress(),
-			Ipv6Address::ConvertFrom (dstAddr),Ifindex,len,packet->GetUid(),msg,false);
-
+	static TypeId t = TypeId("ns3::DncpApplication").SetParent<Application>()
+	.AddConstructor<DncpApplication>()
+	.AddTraceSource ("NetworkHash",
+	                 "the network hash value calculated by this node",
+	                 MakeTraceSourceAccessor (&DncpApplication::m_net_hash),
+					 "ns3::DncpApplication::TracedDouble")
+	.AddTraceSource("PktRx",
+					"Trace source indicating a packet was received",
+					MakeTraceSourceAccessor(&DncpApplication::m_packetRxTrace),
+					"ns3::DncpApplication::DncpCallback")
+	.AddTraceSource("PktTx",
+					"Trace source indicating a packet was sent",
+					MakeTraceSourceAccessor(&DncpApplication::m_packetTxTrace),
+					"ns3::DncpApplication::DncpCallback");
+	return t;
 }
 
-ssize_t DncpApplication::DncpRecvFrom(void *buf, size_t len,  dncp_ep *ep,
-						struct sockaddr_in6 *src, struct sockaddr_in6 *dst)
+DncpApplication::DncpApplication()
+  : m_socket6 (0),
+    m_timeoutEvent (),
+    m_running (true),
+    m_packetsSent (0),
+    m_processing_delay(10)
 {
-	NS_LOG_FUNCTION (this<<m_dncp);
-	Ptr<Packet> packet;
-	Address from;
-	while ((packet = m_socket6->RecvFrom(from))) {
-		if (!Inet6SocketAddress::IsMatchingType(from)) {
-			NS_LOG_WARN("IPv4 packet received in DNCP");
-			continue;
-		}
-		Inet6SocketAddress from6 = Inet6SocketAddress::ConvertFrom(from);
-
-		uint32_t incomingIf;
-		uint32_t pktSize;
-
-		/*Get incoming interface index*/
-		Ipv6PacketInfoTag pktInfo;
-		if (!packet->RemovePacketTag (pktInfo)) {
-			NS_LOG_ERROR("No incoming interface on RIPng message, aborting.");
-			continue;
-		}
-
-		//Get interface
-		incomingIf = pktInfo.GetRecvIf();
-		char ifname[IFNAMSIZ];
-		std::sprintf(ifname,"%d",incomingIf);
-		*ep = dncp_find_ep_by_name(m_dncp, ifname);
-		if (!*ep)
-			continue;
-
-		/*Get packet size*/
-		pktSize=packet->GetSize();
-
-		//Source address
-		from6.GetIpv6().GetBytes(reinterpret_cast<uint8_t *>(&src->sin6_addr));
-		src->sin6_family = AF_INET6;
-		src->sin6_port = htons(from6.GetPort());
-		src->sin6_scope_id = 0;
-
-		//Destination address
-		pktInfo.GetAddress().GetBytes(reinterpret_cast<uint8_t *>(&dst->sin6_addr));
-		dst->sin6_family = AF_INET6;
-		dst->sin6_port = htons(HNCP_PORT);
-		dst->sin6_scope_id = incomingIf;
-
-		//dump packet to the buffer
-		packet->CopyData(static_cast<uint8_t*>(buf),pktSize);
-
-		struct tlv_attr *msg =container_of(static_cast<char(*)[0]>(buf), tlv_attr, data);
-		NS_LOG_INFO("At time " << Simulator::Now ().GetSeconds () << "s Node "<<GetNode()->GetId()<<
-				" received " << pktSize<< " bytes ["<<from6.GetIpv6() <<" -> "<<pktInfo.GetAddress()<<
-				"] through interface "<<incomingIf);
-
-		/*notify users of DNCP receiving packet*/
-		m_packetRxTrace(from6.GetIpv6(), pktInfo.GetAddress(), incomingIf, pktSize, packet->GetUid(), msg, true);
-		return pktSize;
-	}
-	return -1;
+	NS_LOG_FUNCTION(this);
 }
 
 }/*End ns3 namespace*/

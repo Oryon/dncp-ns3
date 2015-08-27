@@ -20,6 +20,7 @@ extern "C" {
 #include <string>
 #include <cstdlib>
 #include <stdint.h>
+#include <list.h>
 #include "ns3/type-id.h"
 #include "ns3/socket.h"
 #include "ns3/packet.h"
@@ -38,12 +39,23 @@ namespace ns3 {
 class Socket;
 class Packet;
 
+class DncpPacket
+{
+public:
+	DncpPacket(Ptr<Packet>, Time, Address);
+	Ptr<Packet> m_packet;
+	Time m_delivery_time;
+	Address m_from;
+private:
+};
+
 class DncpApplication : public Application
 {
 public:
 	static TypeId GetTypeId (void);
 	DncpApplication();
 	virtual ~DncpApplication();
+	void SetQueueProperties(Time processing_delay);
 
 private:
 	virtual void StartApplication(void);
@@ -72,10 +84,9 @@ private:
 			  struct sockaddr_in6 *src, struct sockaddr_in6 *dst);
 	void DncpScheduleTimeout(int msecs);
 
-
 	void DncpTimeout();
 	void HandleRead();
-	void ScheduleRead(Ptr<Socket> socket);
+	void RecvFromDevice(Ptr<Socket> socket);
 
 	struct {
 		DncpApplication *app;
@@ -88,15 +99,14 @@ private:
 	EventId						m_readEvent;
 	bool            			m_running;
 	uint32_t        			m_packetsSent;
-	TracedValue<uint64_t> 		m_net_hash;
+	std::list<DncpPacket *>     m_packets;
+	Time                        m_processing_delay;
 
-	TracedCallback<Ipv6Address,Ipv6Address,uint32_t,uint32_t,uint64_t,struct tlv_attr*,bool > m_packetRxTrace;
-	TracedCallback<Ipv6Address,Ipv6Address,uint32_t,uint32_t,uint64_t,struct tlv_attr*,bool > m_packetTxTrace;
-	TracedCallback<Ptr<Packet>,uint32_t,bool> m_packetRxTrace1;
+	TracedValue<uint64_t> 		m_net_hash;
+	TracedCallback<Ptr<Node>, Ptr<NetDevice>, Ptr<Packet>, const Ipv6Address &, const Ipv6Address & > m_packetRxTrace;
+	TracedCallback<Ptr<Node>, Ptr<NetDevice>, Ptr<Packet>, const Ipv6Address &, const Ipv6Address & > m_packetTxTrace;
 };
 
 }
-
-
 #endif /* DNCP_APPLICATION_H */
 

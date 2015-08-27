@@ -19,42 +19,69 @@ using namespace ns3;
 using namespace std;
 
 static void
-Trace_Hash(Ptr<OutputStreamWrapper> file,std::string context,const uint64_t oldvalue,const uint64_t newvalue){
-	*file->GetStream() <<Simulator::Now ().GetSeconds ()<<" "<<context.substr(10,(context.find("/ApplicationList")-10))<<" "<<newvalue<<std::endl;
+Trace_Hash(Ptr<OutputStreamWrapper> file, std::string context,
+		const uint64_t oldvalue, const uint64_t newvalue)
+{
+	*file->GetStream() << Simulator::Now().GetSeconds()
+			<< " "<< context.substr(10,(context.find("/ApplicationList")-10))<< " "<< newvalue<<std::endl;
 }
 
-/*Callback to trace the packets sent and received in dcnp*/
-static void
-Trace_pkt(Ptr<OutputStreamWrapper> file,std::string context, Ipv6Address saddr, Ipv6Address dstaddr,
-		uint32_t deviceIndex,uint32_t pktsize,uint64_t uid,struct tlv_attr* msg, bool isReceive){
-if (isReceive)
-	*file->GetStream() <<Simulator::Now ().GetSeconds ()<< " R "<<context.substr(10,(context.find("/ApplicationList")-10))<<
-	" "<<uid<< (dstaddr.IsMulticast()? " M ":" U ")<<saddr<<" "<<dstaddr<<" "<<deviceIndex<<" "<<pktsize<<" " ;
-else
-	*file->GetStream() <<Simulator::Now ().GetSeconds ()<< " S "<<context.substr(10,(context.find("/ApplicationList")-10))<<
-	" "<<uid<<(dstaddr.IsMulticast()? " M ":" U ")<<saddr<<" "<<dstaddr<<" "<<deviceIndex<<" "<<pktsize<<" " ;
+static void TraceDncpPkt(Ptr<OutputStreamWrapper> out,
+		Ptr<Node> n, Ptr<NetDevice> dev,
+		Ptr<Packet> packet, const Ipv6Address &saddr, const Ipv6Address &daddr,
+		bool isReceive)
+{
+	*out->GetStream()
+			<< Simulator::Now().GetSeconds () << " "
+			<< (isReceive?"R ":"S ")
+			<< n->GetId() << " "
+			<< packet->GetUid() << " "
+			<< (daddr.IsMulticast()?"M ":"U ")
+			<< saddr << " "
+			<< daddr << " "
+			<< dev->GetIfIndex() << " "
+			<< packet->GetSize() <<" ";
 
-	tlv_init(msg, 0, pktsize + sizeof(struct tlv_attr));
+	Ptr<Ipv6> ipv6 = n->GetObject<Ipv6>();
+	std::vector<char> buff(packet->GetSize() + sizeof(tlv_attr));
+	struct tlv_attr *msg = (struct tlv_attr *)&buff[0];
+	packet->CopyData((uint8_t *)msg->data, packet->GetSize());
+	tlv_init(msg, 0, packet->GetSize() + sizeof(struct tlv_attr));
 
 	int counter[11]={0};
 	struct tlv_attr *a;
 
-	tlv_for_each_attr(a, msg){
+	tlv_for_each_attr(a, msg)
 		counter[tlv_id(a)]++;
-	}
 
-	/*determine the type of the packet*/
-	if (counter[DNCP_T_ENDPOINT_ID]==1)
-		if (counter[DNCP_T_REQ_NET_STATE]==1)
-			*file->GetStream() <<"REQ_NET"<<std::endl;
-		else if (counter[DNCP_T_REQ_NODE_STATE]==1)
-			*file->GetStream() <<"REQ_NODE"<<std::endl;
-		else if (counter[DNCP_T_NET_STATE]==1)
-			*file->GetStream()<<"NET_STATE"<<std::endl;
-		else if ((counter[DNCP_T_NET_STATE]==0) && (counter[DNCP_T_NODE_STATE]==1))
-			*file->GetStream()<<"NODE_STATE"<<std::endl;
-		else NS_LOG_ERROR("unknown TLV");
-	else NS_LOG_ERROR("unknown TLV");
+	if(!counter[DNCP_T_ENDPOINT_ID])
+		*out->GetStream() << "MALFORMED";
+	else if (counter[DNCP_T_REQ_NET_STATE]==1)
+		*out->GetStream() << "REQ_NET";
+	else if (counter[DNCP_T_REQ_NODE_STATE]==1)
+		*out->GetStream() << "REQ_NODE";
+	else if (counter[DNCP_T_NET_STATE]==1)
+		*out->GetStream()<< "NET_STATE";
+	else if ((counter[DNCP_T_NET_STATE]==0) && (counter[DNCP_T_NODE_STATE]==1))
+		*out->GetStream()<< "NODE_STATE";
+	else
+		*out->GetStream() <<"MALFORMED";
+
+	*out->GetStream() << std::endl;
+}
+
+static void TraceDncpTxPkt(Ptr<OutputStreamWrapper> out,
+		Ptr<Node> n, Ptr<NetDevice> dev,
+		Ptr<Packet> packet, const Ipv6Address &saddr, const Ipv6Address &daddr)
+{
+	TraceDncpPkt(out, n, dev, packet, saddr, daddr, 0);
+}
+
+static void TraceDncpRxPkt(Ptr<OutputStreamWrapper> out,
+		Ptr<Node> n, Ptr<NetDevice> dev,
+		Ptr<Packet> packet, const Ipv6Address &saddr, const Ipv6Address &daddr)
+{
+	TraceDncpPkt(out, n, dev, packet, saddr, daddr, 1);
 }
 
 
@@ -90,7 +117,7 @@ enum Topology{
 int
 main (int argc, char *argv[]){
 
-	Time::SetResolution (Time::MS);
+	Time::SetResolution (Time::US);
 
 	log_level=0;
 	bool verbose=false;
@@ -99,19 +126,21 @@ main (int argc, char *argv[]){
 	int N=3;
 	uint16_t topology=STRING;
 	string trialID;
+	int64_t delay = -1;
 
     stringstream sstr;
     sstr << time (NULL);
     trialID = sstr.str();
 
 	CommandLine cmd;
-	cmd.AddValue ("log_level","log level in dncp code",log_level);
-	cmd.AddValue ("verbose","set it to true to enable Dncp2Application logging component",verbose);
-	cmd.AddValue ("start_time","the time that dncp applications begin to run",startTime);
-	cmd.AddValue ("stop_time","the stop time of dncp application",stopTime);
-	cmd.AddValue ("topology","the topology that the simulation is going to generate",topology);
-	cmd.AddValue ("nNode", "number of nodes in the network",N);
-	cmd.AddValue ("trialID","the ID of this trial",trialID);
+	cmd.AddValue ("log_level", "log level in dncp code", log_level);
+	cmd.AddValue ("verbose", "set it to true to enable Dncp2Application logging component", verbose);
+	cmd.AddValue ("start_time", "the time that dncp applications begin to run", startTime);
+	cmd.AddValue ("stop_time", "the stop time of dncp application", stopTime);
+	cmd.AddValue ("topology", "the topology that the simulation is going to generate", topology);
+	cmd.AddValue ("nNode", "number of nodes in the network", N);
+	cmd.AddValue ("trialID", "the ID of this trial", trialID);
+	cmd.AddValue ("delay", "Additional processing time (us) within DNCP application", delay);
 	cmd.Parse (argc, argv);
 
 	if(verbose){
@@ -130,8 +159,8 @@ main (int argc, char *argv[]){
 	nodes.Create(N);
 
 	CsmaHelper csma;
-	csma.SetChannelAttribute ("DataRate", StringValue ("1000Mbps"));
-	csma.SetChannelAttribute ("Delay", TimeValue (MicroSeconds(1)));
+	csma.SetChannelAttribute("DataRate", StringValue("1000Mbps"));
+	csma.SetChannelAttribute("Delay", TimeValue(MicroSeconds(1)));
 
 	InternetStackHelper stack;
 	stack.Install(nodes);
@@ -239,23 +268,25 @@ main (int argc, char *argv[]){
 		NS_LOG_ERROR("Unknown topology");
 	}
 
-	DncpApplicationHelper dncp;
-	ApplicationContainer dncpApps= dncp.Install(nodes);
+	ObjectFactory factory;
+	factory.SetTypeId(DncpApplication::GetTypeId ());
+	for(int i=1; i<N; i++) {
+		Ptr<DncpApplication> app = factory.Create<DncpApplication> ();
+		nodes.Get(i)->AddApplication(app);
+		app->SetQueueProperties(MicroSeconds(1000));
+	}
 
 	AsciiTraceHelper asciiTraceHelper;
 	Ptr<OutputStreamWrapper> stream_hash = asciiTraceHelper.CreateFileStream (runID.str()+".networkhash");
 	Ptr<OutputStreamWrapper> stream_pkt = asciiTraceHelper.CreateFileStream (runID.str()+".packets");
 
-	Config::Connect ("/NodeList/*/ApplicationList/*/$ns3::DncpApplication/NetworkHash", MakeBoundCallback (&Trace_Hash, stream_hash));
-	Config::Connect ("/NodeList/*/ApplicationList/*/$ns3::DncpApplication/PktRx", MakeBoundCallback (&Trace_pkt, stream_pkt));
-	Config::Connect ("/NodeList/*/ApplicationList/*/$ns3::DncpApplication/PktTx", MakeBoundCallback (&Trace_pkt, stream_pkt));
+	Config::Connect("/NodeList/*/ApplicationList/*/$ns3::DncpApplication/NetworkHash", MakeBoundCallback (&Trace_Hash, stream_hash));
+	Config::ConnectWithoutContext("/NodeList/*/ApplicationList/*/$ns3::DncpApplication/PktRx", MakeBoundCallback (&TraceDncpRxPkt, stream_pkt));
+	Config::ConnectWithoutContext("/NodeList/*/ApplicationList/*/$ns3::DncpApplication/PktTx", MakeBoundCallback (&TraceDncpTxPkt, stream_pkt));
 
-	Config::Connect ("/NodeList/*/DeviceList/*/$ns3::CsmaNetDevice/MacTx", MakeBoundCallback (&Trace_pkt2,stream_pkt));
-	Config::Connect ("/NodeList/*/DeviceList/*/$ns3::CsmaNetDevice/MacTxDrop", MakeBoundCallback (&Trace_pkt2,stream_pkt));
-	Config::Connect ("/NodeList/*/DeviceList/*/$ns3::CsmaNetDevice/PhyTxDrop", MakeBoundCallback (&Trace_pkt2,stream_pkt));
-	//Config::Connect ("/NodeList/*/DeviceList/*/$ns3::CsmaNetDevice/PhyTxEnd", MakeBoundCallback (&PhyDropTrack,stream2));
-	//Config::Connect ("/NodeList/*/DeviceList/*/$ns3::CsmaNetDevice/MacRx", MakeBoundCallback (&PhyDropTrack,stream2));
-	//Config::Connect ("/NodeList/*/$ns3::UdpL4Protocol/SocketList/*/Drop", MakeBoundCallback (&PhyDropTrack,stream2));
+	Config::Connect("/NodeList/*/DeviceList/*/$ns3::CsmaNetDevice/MacTx", MakeBoundCallback (&Trace_pkt2, stream_pkt));
+	Config::Connect("/NodeList/*/DeviceList/*/$ns3::CsmaNetDevice/MacTxDrop", MakeBoundCallback (&Trace_pkt2, stream_pkt));
+	Config::Connect("/NodeList/*/DeviceList/*/$ns3::CsmaNetDevice/PhyTxDrop", MakeBoundCallback (&Trace_pkt2, stream_pkt));
 
 	Config::Set("/NodeList/*/ApplicationList/*/$ns3::DncpApplication/StartTime",TimeValue (Seconds (startTime)));
 	Config::Set("/NodeList/*/ApplicationList/*/$ns3::DncpApplication/StopTime",TimeValue (Seconds (stopTime)));
