@@ -189,7 +189,7 @@ void DncpApplication::DncpSendTo(int Ifindex,struct sockaddr_in6 *src,
 			<<dstAddr <<" through interface "<< Ifindex);
 
 	Ptr<Ipv6> ipv6 = GetNode()->GetObject<Ipv6>();
-	m_packetTxTrace(GetNode(), GetNode()->GetDevice(Ifindex), packet,
+	m_packetTxTrace(GetNode()->GetDevice(Ifindex), packet,
 			ipv6->GetAddress(ipv6->GetInterfaceForDevice(GetNode()->GetDevice(Ifindex)),0).GetAddress(),
 			Ipv6Address::ConvertFrom(dstAddr));
 }
@@ -266,7 +266,7 @@ ssize_t DncpApplication::DncpRecvFrom(void *buf, size_t len,  dncp_ep *ep,
 				" received " << pktSize<< " bytes ["<<from6.GetIpv6() <<" -> "<<pktInfo.GetAddress()<<
 				"] through interface "<<incomingIf);
 
-		m_packetRxTrace(GetNode(), GetNode()->GetDevice(incomingIf),
+		m_packetRxTrace(GetNode()->GetDevice(incomingIf),
 				packet->m_packet, from6.GetIpv6(), pktInfo.GetAddress());
 
 		delete packet;
@@ -319,6 +319,7 @@ bool DncpApplication::DncpInit()
 {
 	NS_LOG_FUNCTION(this);
 
+	memset(&m_ext_s.ext, 0, sizeof(m_ext_s.ext));
 	m_ext_s.ext.conf.per_ep.trickle_imin = HNCP_TRICKLE_IMIN;
 	m_ext_s.ext.conf.per_ep.trickle_imax = HNCP_TRICKLE_IMAX;
 	m_ext_s.ext.conf.per_ep.trickle_k = HNCP_TRICKLE_K;

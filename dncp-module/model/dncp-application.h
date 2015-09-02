@@ -103,8 +103,8 @@ private:
 	Time                        m_processing_delay;
 
 	TracedValue<uint64_t> 		m_net_hash;
-	TracedCallback<Ptr<Node>, Ptr<NetDevice>, Ptr<Packet>, const Ipv6Address &, const Ipv6Address & > m_packetRxTrace;
-	TracedCallback<Ptr<Node>, Ptr<NetDevice>, Ptr<Packet>, const Ipv6Address &, const Ipv6Address & > m_packetTxTrace;
+	TracedCallback<Ptr<NetDevice>, Ptr<Packet>, const Ipv6Address &, const Ipv6Address & > m_packetRxTrace;
+	TracedCallback<Ptr<NetDevice>, Ptr<Packet>, const Ipv6Address &, const Ipv6Address & > m_packetTxTrace;
 };
 
 }
