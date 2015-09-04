@@ -31,6 +31,16 @@ static void Trace_Hash(Ptr<OutputStreamWrapper> file, Ptr<DncpApplication> app,
 			<< std::endl;
 }
 
+static void TraceDncpTlv(Ptr<OutputStreamWrapper> out, Ptr<DncpApplication> app,
+		uint16_t type, uint16_t len, char *value, bool add)
+{
+	*out->GetStream() << Simulator::Now().GetSeconds () << SEPARATOR
+			<< (add?"AddTlv":"DelTlv") << SEPARATOR
+			<< app->GetNode()->GetId() << SEPARATOR
+			<< type << SEPARATOR
+			<< len << SEPARATOR << std::endl;
+}
+
 static void TraceDncpPkt(Ptr<OutputStreamWrapper> out, Ptr<DncpApplication> app,
 		Ptr<NetDevice> dev, Ptr<Packet> packet, const Ipv6Address &saddr, const Ipv6Address &daddr,
 		bool isReceive)
@@ -268,6 +278,7 @@ main (int argc, char *argv[]){
 		app->TraceConnectWithoutContext("NetworkHash", MakeBoundCallback(&Trace_Hash, stream_all, app));
 		app->TraceConnectWithoutContext("PktRx", MakeBoundCallback (&TraceDncpRxPkt, stream_all, app));
 		app->TraceConnectWithoutContext("PktTx", MakeBoundCallback (&TraceDncpTxPkt, stream_all, app));
+		app->TraceConnectWithoutContext("DncpTlv", MakeBoundCallback (&TraceDncpTlv, stream_all, app));
 		for(int j=0; j < (int)n->GetNDevices(); j++) {
 			Ptr<NetDevice> dev = n->GetDevice(j);
 			char path[128];

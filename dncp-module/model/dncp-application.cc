@@ -33,6 +33,13 @@ namespace ns3 {
 
 NS_LOG_COMPONENT_DEFINE("DncpApplication");
 
+void DncpApplication::DncpTlvCb(dncp_subscriber s,
+		dncp_node n, struct tlv_attr *tlv, bool add)
+{
+	ns3::DncpApplication* app = container_of(s, typeof(app->m_ext_s), subscriber)->app;
+	app->m_dncpTlvTrace(tlv_id(tlv), tlv_len(tlv), (char *)tlv_data(tlv), add);
+}
+
 void DncpApplication::DncpHash(const void *buf, size_t len, void *dest)
 {
 	md5_ctx_t ctx;
@@ -127,6 +134,16 @@ void DncpApplication::DncpScheduleTimeout(dncp_ext ext, int msecs)
 /***********************************************************************************************************************/
 
 NS_OBJECT_ENSURE_REGISTERED (DncpApplication);
+
+int DncpApplication::AddTlv(uint16_t type, uint16_t len, char *data)
+{
+	return dncp_add_tlv(m_dncp, type, data, len, 0) == NULL;
+}
+
+void DncpApplication::RemoveTlv(uint16_t type, uint16_t len, char *data)
+{
+	dncp_remove_tlv_matching(m_dncp, type, data, len);
+}
 
 void DncpApplication::DncpScheduleTimeout(int msecs)
 {
@@ -283,6 +300,9 @@ void DncpApplication::StartApplication(void)
 		return;
 	}
 
+	memset(&m_ext_s.subscriber, 0, sizeof(m_ext_s.subscriber));
+	m_ext_s.subscriber.tlv_change_cb = DncpApplication::DncpTlvCb;
+
 	m_running = true;
 	int num = this->GetNode()->GetNDevices();
 	for(int i=1; i<num; i++){
@@ -295,11 +315,15 @@ void DncpApplication::StartApplication(void)
 		else
 			NS_LOG_ERROR("unable to enable endpoint "<< ifname);
 	}
+
+	dncp_subscribe(m_dncp, &m_ext_s.subscriber);
 }
 
 void DncpApplication::StopApplication(void)
 {
 	NS_LOG_FUNCTION (this);
+	dncp_unsubscribe(m_dncp, &m_ext_s.subscriber);
+
 	this->DncpUninit();
 	NS_LOG_INFO("At time " <<Simulator::Now ().GetSeconds () << "s Node "<<GetNode()->GetId()<<" stopped, " <<m_packetsSent
 			<<" packets sent in total");
@@ -391,6 +415,10 @@ TypeId DncpApplication::GetTypeId (void)
 	.AddTraceSource("PktTx",
 					"Trace source indicating a packet was sent",
 					MakeTraceSourceAccessor(&DncpApplication::m_packetTxTrace),
+					"ns3::DncpApplication::DncpCallback")
+	.AddTraceSource("DncpTlv",
+					"Trace source indicating a change in the TLV set",
+					MakeTraceSourceAccessor(&DncpApplication::m_dncpTlvTrace),
 					"ns3::DncpApplication::DncpCallback");
 	return t;
 }

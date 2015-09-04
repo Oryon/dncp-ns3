@@ -56,6 +56,8 @@ public:
 	DncpApplication();
 	virtual ~DncpApplication();
 	void SetQueueProperties(Time processing_delay);
+	void RemoveTlv(uint16_t type, uint16_t len, char *data);
+	int AddTlv(uint16_t type, uint16_t len, char *data);
 
 private:
 	virtual void StartApplication(void);
@@ -74,6 +76,8 @@ private:
 	static void DncpScheduleTimeout(dncp_ext ext, int msecs);
 	static int DncpGetHwAddrs(dncp_ext ext, unsigned char *buf, int buf_left);
 	static hnetd_time_t DncpGetTime(dncp_ext ext);
+	static void DncpTlvCb(dncp_subscriber s,
+			dncp_node n, struct tlv_attr *tlv, bool add);
 
 	// Per instance function
 	bool DncpInit();
@@ -91,6 +95,7 @@ private:
 	struct {
 		DncpApplication *app;
 		dncp_ext_s		 ext;
+		dncp_subscriber_s subscriber;
 	} m_ext_s;
 	struct in6_addr 			m_multicast_address;
 	dncp   				 	    m_dncp;
@@ -105,6 +110,7 @@ private:
 	TracedValue<uint64_t> 		m_net_hash;
 	TracedCallback<Ptr<NetDevice>, Ptr<Packet>, const Ipv6Address &, const Ipv6Address & > m_packetRxTrace;
 	TracedCallback<Ptr<NetDevice>, Ptr<Packet>, const Ipv6Address &, const Ipv6Address & > m_packetTxTrace;
+	TracedCallback<uint16_t, uint16_t, char * , bool > m_dncpTlvTrace;
 };
 
 }
