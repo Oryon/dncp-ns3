@@ -1,7 +1,6 @@
 #!/usr/bin/python3.4
 
-import fileinput
-import string
+
 import collections
 import os
 import sys
@@ -15,8 +14,10 @@ SUBDIRS = ["rawdata", "traffic", "convergence"]
 DNCP_EXEC = "env LD_LIBRARY_PATH=./build/ ./build/src/dncp/scripts/ns3.23-dncp_example-optimized"
 
 TRAFFIC_INTERVAL = 0.1
-START = "1s"
-STOP = "100s"
+START = 1
+STOP = 100
+
+THREADS = 15
 
 def create_dir(dir):
     if not os.path.isdir(dir):
@@ -26,14 +27,25 @@ def create_dir(dir):
             print("Unable to create " + dir)
             os.exit(1)
 
+def dicotomia_range(start, end):
+    l = []
+    interval = end - start
+    while len(l) != end - start:
+        for i in range(int(start), int(end), int(interval)):
+            if i not in l:
+                l.append(i)
+        interval /= 2
+        if interval == 0:
+            interval = 1
+    return l
 
 class SimulationsSet():
 
     def __init__(self, directory = "./dncp_output/"):
         self.directory = directory
         self.topologies = ["tree", "doubletree", "star", "string", "link", "mesh"]
-        self.sizes = range(5, 100)
-        self.trials = range(1, 10)
+        self.sizes = dicotomia_range(5, 100)
+        self.trials = dicotomia_range(1, 10)
         self.delays = [10, 100, 1000, 10000, 100000, 1000000]
 
         self.lock = threading.Semaphore(1)
@@ -41,13 +53,15 @@ class SimulationsSet():
         create_dir(self.directory+"/runs/")
 
         # Initial build
-        os.system("./waf --run 'dncp_example' --command-template='%s " +
-                  "--topology=mesh --size=2 --stop_time=10 --delay=200us --seed=2'")
+        ret = os.system("./waf --run 'dncp_example' --command-template='%s " +
+                        "--topology=mesh --size=2 --stop_time=10 --delay=200us --seed=2'")
+        if ret != 0:
+            raise SystemError("Simulator build or testrun dfailed")
 
     def run_simulation(self, simulation):
 
-        exec = os.path.realpath(sys.argv[0])+" "+str(simulation)
-        print("Executing "+exec)
+        print("Doing "+str(simulation))
+        exec = os.path.realpath(sys.argv[0])+" run "+str(simulation)
         os.system(exec)
 
         simulation.load()
@@ -94,15 +108,18 @@ class SimulationsSet():
         self.lock.release()
 
     def run(self):
-        thread_pool = ThreadPool(20)
-        for topology in self.topologies:
-            for size in self.sizes:
-                for trial in self.trials:
-                    for delay in self.delays:
-                        sim = Simulation(self.directory+"runs/", topology, size, trial, delay)
-                        thread_pool.add_thread(SimulationsSet.run_simulation, (self, sim, ))
-        thread_pool.wait()
 
+        thread_pool = ThreadPool(THREADS)
+        try:
+            for trial in self.trials:
+                for size in self.sizes:
+                    for topology in self.topologies:
+                        for delay in self.delays:
+                            sim = Simulation(self.directory+"runs/", topology, size, trial, delay)
+                            thread_pool.add_thread(SimulationsSet.run_simulation, (self, sim, ))
+        except KeyboardInterrupt as e:
+            print("Interrupted")
+        thread_pool.wait()
 
 class Simulation:
     def __init__(self, directory, topology, size, trial, delay):
@@ -123,186 +140,95 @@ class Simulation:
     def __str__(self):
         return self.topology + "-" + str(self.size) + "-" + str(self.trial) + "-" + str(self.delay)
 
+    def json_file(self):
+        return self.directory + "/obj.json"
+
     def load(self):
         try:
-            with open(self.directory + "/obj.json", "r") as f:
+            with open(self.json_file(), "r") as f:
                 self.json = json.load(f)
         except Exception as e:
             self.json = {}
 
     def store(self, key, value):
         self.json[key] = value
-        with open(self.directory + "/obj.json", "w") as f:
+        with open(self.json_file(), "w") as f:
             json.dump(self.json, f)
+        return value
 
-    def ns3_log(self):
+    def ns3_log_path(self):
         return self.directory + "/ns3-log.csv"
 
-    def traffic_log(self):
+    def traffic_log_path(self):
         return self.directory + "/traffic.csv"
 
-    def convergence_log(self):
+    def convergence_log_path(self):
         return self.directory + "/convergence.csv"
 
-    def traffic_graph_file(self):
-        return self.traffic_log().replace(".csv", ".png")
+    def traffic_plot_path(self):
+        return self.traffic_log_path().replace(".csv", ".png")
 
-    def convergence_graph_file(self):
-        return self.convergence_log().replace(".csv", ".png")
+    def convergence_plot_path(self):
+        return self.convergence_log_path().replace(".csv", ".png")
 
-    def run_ns3(self):
-        out = self.ns3_log()
-        if os.path.isfile(out):
-            return
+    def open_ns3_logs(self):
+        if not os.path.isfile(self.ns3_log_path()):
+            ret = os.system(DNCP_EXEC +
+                            " --topology=" + self.topology +
+                            " --size=" + str(self.size) +
+                            " --start_time=" + str(START) + "s" +
+                            " --stop_time=" + str(STOP) + "s" +
+                            " --delay=" + str(self.delay) + "us" +
+                            " --seed=" + str(self.trial) +
+                            " --output=" + self.ns3_log_path())
 
-        ret = os.system(DNCP_EXEC +
-                        " --topology=" + self.topology +
-                        " --size=" + str(self.size) +
-                        " --start_time=" + START +
-                        " --stop_time=" + STOP +
-                        " --delay=" + str(self.delay) + "us" +
-                        " --seed=" + str(self.trial) +
-                        " --output=" + out)
-        if ret != 0:
-            if os.path.exists(out):
-                os.remove(out)
-            raise Exception("Failed "+str(self))
+            if ret != 0:
+                if os.path.exists(self.ns3_log_path()):
+                    os.remove(self.ns3_log_path())
+                raise Exception("NS3 simulation failed "+str(self))
+        return open(self.ns3_log_path(), "r", encoding="utf-8")
 
+    def open_convergence_logs(self):
+        if not os.path.isfile(self.convergence_log_path()):
+            with open(self.convergence_log_path(), "w", encoding="utf-8") as out, self.open_ns3_logs() as f:
+                node_hashes = {}
+                hash_count = collections.Counter()
+                for line in f:
+                    parts = line.split(",")
+                    if len(parts) < 4 or parts[1] != "NetHash":
+                        continue
+                    time = str(parts[0])
+                    node = parts[2]
+                    hash = parts[3]
 
-    def process_traffic(self):
-        if os.path.isfile(self.traffic_log()):
-            return
+                    if node in node_hashes:
+                        if node_hashes[node] == hash:
+                            continue
 
-        self.run_ns3()
-        out = open(self.traffic_log(), "w", encoding="utf-8")
-        meter_all = ThroughputMeter(TRAFFIC_INTERVAL, "DncpTraffic", out)
-        meter_nodes = {}
-        meter_devices = {}
-        with open(self.ns3_log(), "r") as f:
-            for line in f:
-                # 101.916,DncpTx,32,16,51847,M,fe80::200:ff:fe00:3e2,ff02::8808,24,NET_STATE,
-                parts = line.split(",")
-                if len(parts) < 4 or parts[1] != "DncpTx":
-                    continue
+                        hash_count[node_hashes[node]] -= 1
+                        if hash_count[node_hashes[node]] == 0:
+                            del hash_count[node_hashes[node]]
 
-                time = float(parts[0])
-                node = parts[2]
-                device = node + "-" + parts[3]
-                size = int(parts[8])
+                    hash_count[hash] += 1
+                    node_hashes[node] = hash
 
-                if node not in meter_nodes:
-                    meter_nodes[node] = ThroughputMeter(TRAFFIC_INTERVAL, "DncpTrafficNode," + node, out)
-
-                if device not in meter_devices:
-                    meter_devices[device] = ThroughputMeter(TRAFFIC_INTERVAL, "DncpTrafficDev," + node + "," + parts[3], out)
-
-                meter_all.push_packet(time, size)
-                meter_nodes[node].push_packet(time, size)
-                meter_devices[device].push_packet(time, size)
-        out.close()
-
-    def get_traffic_before_convergence(self):
-        if "traffic_before_convergence" in self.json:
-            return self.json["traffic_before_convergence"]
-
-        convergence_time = self.get_convergence_time()
-        with open(self.ns3_log(), "r") as f:
-            tot = 0
-            for line in f:
-                parts = line.split(",")
-                if parts[1] == "DncpTx":
-                    if float(parts[0]) > convergence_time:
-                        break
-                    tot += int(parts[8])
-            self.store("traffic_before_convergence", tot)
-            return tot
-
-
-    def graph_traffic(self):
-        out = self.traffic_graph_file()
-        if os.path.isfile(out):
-            return
-
-        self.process_traffic()
-        convergence = self.get_convergence_time()
-        plot = GnuPlot()
-        plot.append_list([
-            "set datafile separator ','",
-            "set terminal png",
-            "set xlabel 'Time (s)'",
-            "set ylabel 'Global Traffic (Byte/s)'",
-            "set output '"+out+"'",
-            "set xrange [0:"+str(convergence * 1.5)+"]",
-            "plot '<(cat " + self.traffic_log() + " | grep ,DncpTraffic,)' " +
-            "using 1:3 title 'Global Throughput for " + str(self) + "'"
-        ])
-        plot.execute()
-
-    def graph_convergence(self):
-        out = self.convergence_graph_file()
-        if os.path.isfile(out):
-            return
-
-        self.process_convergence()
-        convergence = self.get_convergence_time()
-        plot = GnuPlot()
-        plot.append_list([
-            "set datafile separator ','",
-            "set terminal png",
-            "set xlabel 'Time (s)'",
-            "set ylabel 'Convergence (%)'",
-            "set output '"+out+"'",
-            "set xrange [0:"+str(convergence * 1.5)+"]",
-            "plot '" + self.convergence_log() + "' " +
-            "using 1:3 title 'Convergence percentage for " + str(self) + "'"
-        ])
-        plot.execute()
-
-
-    def process_convergence(self):
-        o = self.convergence_log()
-        if os.path.exists(o):
-            return
-
-        out = open(o, "w", encoding="utf-8")
-        with open(self.ns3_log(), "r") as f:
-            node_hashes = {}
-            hash_count = collections.Counter()
-            for line in f:
-                parts = line.split(",")
-                if len(parts) < 4 or parts[1] != "NetHash":
-                    continue
-                time = str(parts[0])
-                node = parts[2]
-                hash = parts[3]
-
-                if node in node_hashes:
-                    if node_hashes[node] == hash:
+                    if len(node_hashes) != self.size:
                         continue
 
-                    hash_count[node_hashes[node]] -= 1
-                    if hash_count[node_hashes[node]] == 0:
-                        del hash_count[node_hashes[node]]
+                    s = str(time)+",DncpConv,"
+                    commons = hash_count.most_common(5)
+                    for c in commons:
+                        s += str(round((c[1]*1.0)/self.size, 5))+","
+                    out.write(s+"\n")
 
-                hash_count[hash] += 1
-                node_hashes[node] = hash
-
-                if len(node_hashes) != self.size:
-                    continue
-
-                s = str(time)+",DncpConv,"
-                commons = hash_count.most_common(5)
-                for c in commons:
-                    s += str(round((c[1]*1.0)/self.size, 5))+","
-                out.write(s+"\n")
+        return open(self.convergence_log_path(), "r", encoding="utf-8")
 
     def get_convergence_time(self):
         if "convergence_time" in self.json:
             return self.json["convergence_time"]
 
-        self.process_convergence()
-        with open(self.convergence_log(), "r") as f:
-            non_converged = 0
+        non_converged = 0
+        with self.open_convergence_logs() as f:
             for line in f:
                 parts = line.split(",")
                 if parts[1] != "DncpConv":
@@ -313,11 +239,96 @@ class Simulation:
 
                 if percent == 1:
                     if non_converged:
-                        self.store("convergence_time", time)
-                        return time
+                        return self.store("convergence_time", time)
                 else:
                     non_converged = 1
-        raise Exception("Could not find convergence time")
+
+        print("Could not find convergence time for "+str(self))
+        return self.store("convergence_time", 1.5*STOP)
+
+    def open_traffic_logs(self):
+        if not os.path.isfile(self.traffic_log_path()):
+            with open(self.traffic_log_path(), "w", encoding="utf-8") as out, self.open_ns3_logs() as f:
+
+                meter_all = ThroughputMeter(TRAFFIC_INTERVAL, "DncpTraffic", out)
+                meter_nodes = {}
+                meter_devices = {}
+                for line in f:
+                   # 101.916,DncpTx,32,16,51847,M,fe80::200:ff:fe00:3e2,ff02::8808,24,NET_STATE,
+                    parts = line.split(",")
+                    if len(parts) < 4 or parts[1] != "DncpTx":
+                        continue
+
+                    time = float(parts[0])
+                    node = parts[2]
+                    device = node + "-" + parts[3]
+                    size = int(parts[8])
+
+                    if node not in meter_nodes:
+                         meter_nodes[node] = ThroughputMeter(TRAFFIC_INTERVAL, "DncpTrafficNode," + node, out)
+
+                    if device not in meter_devices:
+                         meter_devices[device] = ThroughputMeter(TRAFFIC_INTERVAL, "DncpTrafficDev," + node + "," + parts[3], out)
+
+                    meter_all.push_packet(time, size)
+                    meter_nodes[node].push_packet(time, size)
+                    meter_devices[device].push_packet(time, size)
+
+        return open(self.traffic_log_path(), "r", encoding="utf-8")
+
+    def get_traffic_before_convergence(self):
+        if "traffic_before_convergence" not in self.json:
+            convergence_time = self.get_convergence_time()
+            with self.open_ns3_logs() as f:
+                tot = 0
+                for line in f:
+                    parts = line.split(",")
+                    if parts[1] == "DncpTx":
+                        if float(parts[0]) > convergence_time:
+                            break
+                        tot += int(parts[8])
+                self.store("traffic_before_convergence", tot)
+
+        return self.json["traffic_before_convergence"]
+
+    def plot_traffic(self):
+        if os.path.isfile(self.traffic_plot_path()):
+            return
+
+        self.open_traffic_logs().close()  # Make sure it exists
+        convergence = self.get_convergence_time()  # Get convergence time
+        plot = GnuPlot()
+        plot.append_list([
+            "set datafile separator ','",
+            "set terminal png",
+            "set xlabel 'Time (s)'",
+            "set ylabel 'Global Traffic (Byte/s)'",
+            "set output '"+self.traffic_plot_path()+"'",
+            "set xrange [0:"+str(convergence * 1.5)+"]",
+            "plot '<(cat " + self.traffic_log_path() + " | grep ,DncpTraffic,)' " +
+            "using 1:3 title 'Global Throughput for " + str(self) + "'"
+        ])
+        plot.execute()
+
+    def plot_convergence(self):
+        if os.path.isfile(self.convergence_plot_path()):
+            return
+
+        self.open_convergence_logs().close()  # Make sure it exists
+        convergence = self.get_convergence_time()  # Get convergence time
+        plot = GnuPlot()
+        plot.append_list([
+            "set datafile separator ','",
+            "set terminal png",
+            "set xlabel 'Time (s)'",
+            "set ylabel 'Convergence (%)'",
+            "set output '"+self.convergence_plot_path()+"'",
+            "set xrange [0:"+str(convergence * 1.5)+"]",
+            "plot '" + self.convergence_log_path() + "' " +
+            "using 1:3 title 'Convergence percentage for " + str(self) + "'"
+        ])
+        plot.execute()
+
 
 class GnuPlot:
     def __init__(self):
@@ -337,6 +348,7 @@ class GnuPlot:
 
         plot = subprocess.Popen("gnuplot", stdin=subprocess.PIPE)
         plot.communicate(input=bytearray(s, encoding="utf-8"))
+
 
 class ThreadPool:
     @staticmethod
@@ -394,14 +406,19 @@ class ThroughputMeter:
         return self.total
 
 
+command = ""
 if len(sys.argv) > 1:
-    sim = Simulation.serialize("./dncp_output/runs/", sys.argv[1])
-    sim.graph_traffic()
-    sim.graph_convergence()
+    command = sys.argv[1]
+
+if command == "run":
+    sim = Simulation.serialize("./dncp_output/runs/", sys.argv[2])
+    sim.plot_traffic()
+    sim.plot_convergence()
     sim.get_convergence_time()
     sim.get_traffic_before_convergence()
 else:
     set = SimulationsSet()
     set.run()
+
 
 
