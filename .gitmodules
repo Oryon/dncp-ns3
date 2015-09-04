@@ -1,0 +1,6 @@
+[submodule "ns-3-dev-git"]
+	path = ns-3-dev-git
+	url = https://github.com/Oryon/ns-3-dev-git
+[submodule "hnetd"]
+	path = hnetd
+	url = https://github.com/sbyx/hnetd.git
