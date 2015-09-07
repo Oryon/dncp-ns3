@@ -110,7 +110,7 @@ private:
 	TracedValue<uint64_t> 		m_net_hash;
 	TracedCallback<Ptr<NetDevice>, Ptr<Packet>, const Ipv6Address &, const Ipv6Address & > m_packetRxTrace;
 	TracedCallback<Ptr<NetDevice>, Ptr<Packet>, const Ipv6Address &, const Ipv6Address & > m_packetTxTrace;
-	TracedCallback<uint16_t, uint16_t, char * , bool > m_dncpTlvTrace;
+	TracedCallback<uint16_t, uint16_t, const char * , bool > m_dncpTlvTrace;
 };
 
 }

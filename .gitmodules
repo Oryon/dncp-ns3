@@ -4,3 +4,6 @@
 [submodule "hnetd"]
 	path = hnetd
 	url = https://github.com/sbyx/hnetd.git
+[submodule "libubox"]
+	path = libubox
+	url = http://git.openwrt.org/project/libubox.git

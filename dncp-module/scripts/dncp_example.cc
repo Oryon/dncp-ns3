@@ -32,7 +32,7 @@ static void Trace_Hash(Ptr<OutputStreamWrapper> file, Ptr<DncpApplication> app,
 }
 
 static void TraceDncpTlv(Ptr<OutputStreamWrapper> out, Ptr<DncpApplication> app,
-		uint16_t type, uint16_t len, char *value, bool add)
+		uint16_t type, uint16_t len, const char *value, bool add)
 {
 	*out->GetStream() << Simulator::Now().GetSeconds () << SEPARATOR
 			<< (add?"AddTlv":"DelTlv") << SEPARATOR

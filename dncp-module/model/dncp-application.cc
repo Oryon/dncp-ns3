@@ -404,8 +404,8 @@ TypeId DncpApplication::GetTypeId (void)
 {
 	static TypeId t = TypeId("ns3::DncpApplication").SetParent<Application>()
 	.AddConstructor<DncpApplication>()
-	.AddTraceSource ("NetworkHash",
-	                 "the network hash value calculated by this node",
+	.AddTraceSource("NetworkHash",
+	                 "The network hash value calculated by this node",
 	                 MakeTraceSourceAccessor (&DncpApplication::m_net_hash),
 					 "ns3::DncpApplication::TracedDouble")
 	.AddTraceSource("PktRx",
@@ -419,7 +419,7 @@ TypeId DncpApplication::GetTypeId (void)
 	.AddTraceSource("DncpTlv",
 					"Trace source indicating a change in the TLV set",
 					MakeTraceSourceAccessor(&DncpApplication::m_dncpTlvTrace),
-					"ns3::DncpApplication::DncpCallback");
+					"ns3::DncpApplication::DncpTlvCallback");
 	return t;
 }
 
