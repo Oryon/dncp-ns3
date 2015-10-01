@@ -11,7 +11,7 @@ import json
 
 DIR = "./dncp_output/"
 SUBDIRS = ["rawdata", "traffic", "convergence"]
-DNCP_EXEC = "env LD_LIBRARY_PATH=./build/ ./build/src/dncp/scripts/ns3.23-dncp_example-optimized"
+DNCP_EXEC = "env LD_LIBRARY_PATH=./build/ ./build/src/dncp/scripts/ns3-dev-dncp_example-optimized"
 
 TRAFFIC_INTERVAL = 0.1
 START = 1
