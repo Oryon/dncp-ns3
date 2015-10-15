@@ -9,15 +9,24 @@ import subprocess
 import json
 
 
-DIR = "./dncp_output/"
+DIR = "./dncp_output_test/"
 SUBDIRS = ["rawdata", "traffic", "convergence"]
 DNCP_EXEC = "env LD_LIBRARY_PATH=./build/ ./build/src/dncp/scripts/ns3-dev-dncp_example-optimized"
 
 TRAFFIC_INTERVAL = 0.1
 START = 1
-STOP = 100
+STOP = 200
+TLV_PUBLISH = 100
+TLV_SIZE = 400
 
 THREADS = 15
+
+INVALID_TIME = -1
+
+
+# For showing progress
+TODO = 1
+STARTED = 0
 
 def create_dir(dir):
     if not os.path.isdir(dir):
@@ -41,12 +50,13 @@ def dicotomia_range(start, end):
 
 class SimulationsSet():
 
-    def __init__(self, directory = "./dncp_output/"):
+    def __init__(self, directory = DIR):
         self.directory = directory
         self.topologies = ["tree", "doubletree", "star", "string", "link", "mesh"]
-        self.sizes = dicotomia_range(5, 100)
-        self.trials = dicotomia_range(1, 10)
-        self.delays = [10, 100, 1000, 10000, 100000, 1000000]
+        self.sizes = dicotomia_range(5, 95)
+        self.trials = dicotomia_range(12, 41)
+        #self.delays = [10, 100, 1000, 10000, 100000, 1000000]
+        self.delays = [1000, 10000]
 
         self.lock = threading.Semaphore(1)
         create_dir(self.directory)
@@ -56,7 +66,7 @@ class SimulationsSet():
         ret = os.system("./waf --run 'dncp_example' --command-template='%s " +
                         "--topology=mesh --size=2 --stop_time=10 --delay=200us --seed=2'")
         if ret != 0:
-            raise SystemError("Simulator build or testrun dfailed")
+            raise SystemError("Simulator build or testrun failed")
 
     def run_simulation(self, simulation):
 
@@ -67,40 +77,67 @@ class SimulationsSet():
         simulation.load()
         convergence_time = simulation.get_convergence_time()
         traffic = simulation.get_traffic_before_convergence()
+        packets = simulation.get_packets_before_convergence()
+        tlv_publish = simulation.get_tlv_publish_time()
+        tlv_convergence_time = simulation.get_tlv_convergence_time()
+        tlv_conv = INVALID_TIME
+        tlv_traffic = -1
+        tlv_pkt = -1
+        if tlv_convergence_time != INVALID_TIME and tlv_convergence_time != INVALID_TIME:
+            tlv_conv = tlv_convergence_time - tlv_publish
+            tlv_pkt = simulation.get_packets_before_tlv_convergence()
+            tlv_traffic = simulation.get_traffic_before_tlv_convergence()
 
         self.lock.acquire()
 
         # Update convergence time graph
-        fname = self.directory+"/convergence-size-"+simulation.topology+"-"+str(simulation.delay)+".csv"
+        fname = self.directory+"/data-"+simulation.topology+"-"+str(simulation.delay)+".csv"
         f = open(fname, "a")
-        f.write(str(simulation.size)+","+str(simulation.trial)+","+str(convergence_time)+"\n")
+        f.write(str(simulation.size)+","+str(simulation.trial)+","+ \
+                str(convergence_time) + \
+                ","+str(traffic) + \
+                ","+str(packets) + \
+                ","+str(tlv_conv) + \
+                ","+str(tlv_traffic) + \
+                ","+str(tlv_pkt)+"\n")
         f.close()
+
         plot = GnuPlot()
         plot.append_list([
             "set datafile separator ','",
             "set terminal png",
-            "set xlabel 'Size (s)'",
+            "set xlabel 'Size'",
             "set ylabel 'Convergence Time'",
-            "set output '"+fname.replace(".csv", ".png")+"'",
-            "plot '"+fname+"'"
-            "using 1:3 title 'Convergence time'"
+            "set output '"+fname.replace(".csv", ".png").replace("data", "convergence")+"'",
+            "plot '"+fname+"' using 1:3 title 'Init', '"+fname+"' using 1:6 title 'Single TLV'"
         ])
         plot.execute()
 
         # Update traffic graph
-        fname = self.directory+"/traffic-size-"+simulation.topology+"-"+str(simulation.delay)+".csv"
-        f = open(fname, "a")
-        f.write(str(simulation.size)+","+str(simulation.trial)+","+str(traffic)+"\n")
-        f.close()
+        #fname = self.directory+"/traffic-size-"+simulation.topology+"-"+str(simulation.delay)+".csv"
+        #f = open(fname, "a")
+        #f.write(str(simulation.size)+","+str(simulation.trial)+","+str(traffic)+"\n")
+        #f.close()
         plot = GnuPlot()
         plot.append_list([
             "set datafile separator ','",
             "set terminal png",
-            "set xlabel 'Size (s)'",
+            "set xlabel 'Size'",
             "set ylabel 'Traffic (Bytes)'",
-            "set output '"+fname.replace(".csv", ".png")+"'",
-            "plot '"+fname+"'"
-            "using 1:3 title 'Total amount of traffic'"
+            "set output '"+fname.replace(".csv", ".png").replace("data", "traffic")+"'",
+            "plot '"+fname+"' using 1:4 title 'Init', '"+fname+"' using 1:7 title 'Single TLV' "
+        ])
+        plot.execute()
+
+        #Number of packets
+        plot = GnuPlot()
+        plot.append_list([
+            "set datafile separator ','",
+            "set terminal png",
+            "set xlabel 'Size'",
+            "set ylabel 'Packets'",
+            "set output '"+fname.replace(".csv", ".png").replace("data", "packets")+"'",
+            "plot '"+fname+"' using 1:5 title 'Init', '"+fname+"' using 1:8 title 'Single TLV'"
         ])
         plot.execute()
 
@@ -108,7 +145,8 @@ class SimulationsSet():
         self.lock.release()
 
     def run(self):
-
+        global TODO, STARTED
+        TODO=len(self.trials) * len(self.sizes) * len(self.topologies) * len(self.delays)
         thread_pool = ThreadPool(THREADS)
         try:
             for trial in self.trials:
@@ -117,6 +155,8 @@ class SimulationsSet():
                         for delay in self.delays:
                             sim = Simulation(self.directory+"runs/", topology, size, trial, delay)
                             thread_pool.add_thread(SimulationsSet.run_simulation, (self, sim, ))
+                            STARTED += 1
+                            print("Progress: "+str(100*float(STARTED)/float(TODO))+"%")
         except KeyboardInterrupt as e:
             print("Interrupted")
         thread_pool.wait()
@@ -159,6 +199,9 @@ class Simulation:
     def ns3_log_path(self):
         return self.directory + "/ns3-log.csv"
 
+    def ns3_log_path_archived(self):
+        return self.directory + "/ns3-log.csv.gz"
+
     def traffic_log_path(self):
         return self.directory + "/traffic.csv"
 
@@ -171,16 +214,27 @@ class Simulation:
     def convergence_plot_path(self):
         return self.convergence_log_path().replace(".csv", ".png")
 
+    def archive_ns3_logs(self):
+        if os.path.isfile(self.ns3_log_path()):
+            os.system("gzip "+self.ns3_log_path())
+
     def open_ns3_logs(self):
+        if os.path.isfile(self.ns3_log_path_archived()):
+            os.system("gzip -d "+self.ns3_log_path_archived())
+
         if not os.path.isfile(self.ns3_log_path()):
-            ret = os.system(DNCP_EXEC +
-                            " --topology=" + self.topology +
-                            " --size=" + str(self.size) +
-                            " --start_time=" + str(START) + "s" +
-                            " --stop_time=" + str(STOP) + "s" +
-                            " --delay=" + str(self.delay) + "us" +
-                            " --seed=" + str(self.trial) +
-                            " --output=" + self.ns3_log_path())
+            exe = DNCP_EXEC + " --topology=" + self.topology + \
+                  " --size=" + str(self.size) + " --start_time=" + str(START) + "s" + \
+                  " --stop_time=" + str(STOP) + "s" + \
+                  " --delay=" + str(self.delay) + "us" + \
+                  " --seed=" + str(self.trial) + \
+                  " --output=" + self.ns3_log_path()
+
+            if TLV_PUBLISH >= 0:
+                exe += " --tlv_publish_time="+str(TLV_PUBLISH)+"s "
+                exe += " --tlv_size="+str(TLV_SIZE)
+
+            ret = os.system(exe)
 
             if ret != 0:
                 if os.path.exists(self.ns3_log_path()):
@@ -244,7 +298,55 @@ class Simulation:
                     non_converged = 1
 
         print("Could not find convergence time for "+str(self))
-        return self.store("convergence_time", 1.5*STOP)
+        return self.store("convergence_time", INVALID_TIME)
+
+    def get_tlv_convergence_time(self):
+        if "tlv_convergence_time" in self.json:
+            return self.json["tlv_convergence_time"]
+
+        tlv_publish = self.get_tlv_publish_time()
+        initial_convergence = self.get_convergence_time()
+
+        if initial_convergence == INVALID_TIME:
+            print("Could not find tlv convergence time for "+str(self))
+            return self.store("tlv_convergence_time", INVALID_TIME)
+
+        non_converged = 0
+        with self.open_convergence_logs() as f:
+            for line in f:
+                parts = line.split(",")
+                if parts[1] != "DncpConv":
+                    continue
+
+                time = float(parts[0])
+                percent = float(parts[2])
+
+                if time < tlv_publish:
+                    continue
+
+                if percent == 1:
+                    if non_converged:
+                        return self.store("tlv_convergence_time", time)
+                else:
+                    non_converged = 1
+
+        print("Could not find tlv convergence time for "+str(self))
+        return self.store("tlv_convergence_time", INVALID_TIME)
+
+    def get_tlv_publish_time(self):
+        if "tlv_publish_time" in self.json:
+            return self.json["tlv_publish_time"]
+
+        with self.open_ns3_logs() as f:
+            for line in f:
+                parts = line.split(",")
+                if parts[1] != "AddTlv" or parts[3] != "200":
+                    continue
+
+                return self.store("tlv_publish_time", float(parts[0]))
+
+        print("Could not find tlv publication time for "+str(self))
+        return self.store("tlv_publish_time", INVALID_TIME)
 
     def open_traffic_logs(self):
         if not os.path.isfile(self.traffic_log_path()):
@@ -291,6 +393,51 @@ class Simulation:
 
         return self.json["traffic_before_convergence"]
 
+    def get_traffic_before_tlv_convergence(self):
+        if "traffic_before_tlv_convergence" not in self.json:
+            tlv_publish = self.get_tlv_publish_time()
+            tlv_convergence_time = self.get_tlv_convergence_time()
+            with self.open_ns3_logs() as f:
+                tot = 0
+                for line in f:
+                    parts = line.split(",")
+                    if parts[1] == "DncpTx":
+                        if tlv_publish < float(parts[0]) < tlv_convergence_time:
+                            tot += int(parts[8])
+                self.store("traffic_before_tlv_convergence", tot)
+
+        return self.json["traffic_before_tlv_convergence"]
+
+    def get_packets_before_convergence(self):
+        if "packets_before_convergence" not in self.json:
+            convergence_time = self.get_convergence_time()
+            with self.open_ns3_logs() as f:
+                tot = 0
+                for line in f:
+                    parts = line.split(",")
+                    if parts[1] == "DncpTx":
+                        if float(parts[0]) > convergence_time:
+                            break
+                        tot += 1
+                self.store("packets_before_convergence", tot)
+
+        return self.json["packets_before_convergence"]
+
+    def get_packets_before_tlv_convergence(self):
+        if "packets_before_tlv_convergence" not in self.json:
+            tlv_publish = self.get_tlv_publish_time()
+            tlv_convergence_time = self.get_tlv_convergence_time()
+            with self.open_ns3_logs() as f:
+                tot = 0
+                for line in f:
+                    parts = line.split(",")
+                    if parts[1] == "DncpTx":
+                        if tlv_publish < float(parts[0]) < tlv_convergence_time:
+                            tot += 1
+                self.store("packets_before_tlv_convergence", tot)
+
+        return self.json["packets_before_tlv_convergence"]
+
     def plot_traffic(self):
         if os.path.isfile(self.traffic_plot_path()):
             return
@@ -315,7 +462,7 @@ class Simulation:
             return
 
         self.open_convergence_logs().close()  # Make sure it exists
-        convergence = self.get_convergence_time()  # Get convergence time
+        convergence = self.get_tlv_convergence_time()  # Get convergence time
         plot = GnuPlot()
         plot.append_list([
             "set datafile separator ','",
@@ -411,11 +558,17 @@ if len(sys.argv) > 1:
     command = sys.argv[1]
 
 if command == "run":
-    sim = Simulation.serialize("./dncp_output/runs/", sys.argv[2])
-    sim.plot_traffic()
+    sim = Simulation.serialize(DIR+"/runs/", sys.argv[2])
+    #sim.plot_traffic()
     sim.plot_convergence()
     sim.get_convergence_time()
     sim.get_traffic_before_convergence()
+    sim.get_packets_before_convergence()
+    if TLV_PUBLISH > 0:
+        sim.get_tlv_convergence_time()
+        sim.get_packets_before_tlv_convergence()
+        sim.get_traffic_before_tlv_convergence()
+    sim.archive_ns3_logs()
 else:
     set = SimulationsSet()
     set.run()

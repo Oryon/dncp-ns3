@@ -135,8 +135,9 @@ void DncpApplication::DncpScheduleTimeout(dncp_ext ext, int msecs)
 
 NS_OBJECT_ENSURE_REGISTERED (DncpApplication);
 
-int DncpApplication::AddTlv(uint16_t type, uint16_t len, char *data)
+int DncpApplication::AddTlv(uint16_t type, uint16_t len,  char *data)
 {
+  L_ERR("(%d - %p)Adding tlv of type %d", dncp_time(m_dncp), m_dncp, type);
 	return dncp_add_tlv(m_dncp, type, data, len, 0) == NULL;
 }
 
@@ -148,7 +149,13 @@ void DncpApplication::RemoveTlv(uint16_t type, uint16_t len, char *data)
 void DncpApplication::DncpScheduleTimeout(int msecs)
 {
 	NS_LOG_FUNCTION (this<<msecs);
-	if(!m_timeoutEvent.IsRunning())
+	if (m_timeoutEvent.IsRunning()) {
+	  Time remaining = TimeStep(m_timeoutEvent.GetTs()) - Simulator::Now();
+	  if (remaining.GetMilliSeconds() > msecs)
+	    m_timeoutEvent.Cancel();
+	}
+
+	if (!m_timeoutEvent.IsRunning())
 		m_timeoutEvent=Simulator::Schedule(MilliSeconds(msecs), &DncpApplication::DncpTimeout, this);
 }
 

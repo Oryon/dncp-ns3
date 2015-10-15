@@ -143,6 +143,8 @@ main (int argc, char *argv[]){
 	Time start = Seconds(1);
 	Time stop = Seconds(100);
 	Time delay = MicroSeconds(20);
+	Time tlv_publish = Seconds(0);
+	unsigned int tlv_size = 0;
 
 	CommandLine cmd;
 	cmd.AddValue("log_level", "Log level in dncp code", log_level);
@@ -154,6 +156,8 @@ main (int argc, char *argv[]){
 	cmd.AddValue("delay", "Additional processing time (us) within DNCP application", delay);
 	cmd.AddValue("seed", "Pseudo random seed", seed);
 	cmd.AddValue("output", "Output file", output);
+	cmd.AddValue("tlv_publish_time", "Time at which node 0 will publish a TLV", tlv_publish);
+	cmd.AddValue("tlv_size", "Number of bytes in the tlv", tlv_size);
 	cmd.Parse (argc, argv);
 
 	if(verbose){
@@ -292,6 +296,13 @@ main (int argc, char *argv[]){
 			Config::ConnectWithoutContext(path, MakeBoundCallback (&Trace_CsmaPkt, stream_all, dev, "PhyTxDrop"));
 		}
 		app->SetStartTime(start);
+
+		//Publish TLV at given time
+		if (tlv_size && i == 0) {
+		  char data[tlv_size];
+		  memset(data, 0, tlv_size);
+		  Simulator::Schedule(tlv_publish, &DncpApplication::AddTlv, app, 200, tlv_size, data);
+		}
 	}
 
 	Simulator::Stop(stop);
