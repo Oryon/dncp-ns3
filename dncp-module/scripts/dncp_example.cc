@@ -145,6 +145,8 @@ main (int argc, char *argv[]){
 	Time delay = MicroSeconds(20);
 	Time tlv_publish = Seconds(0);
 	unsigned int tlv_size = 0;
+	double lossrate=0;
+
 
 	CommandLine cmd;
 	cmd.AddValue("log_level", "Log level in dncp code", log_level);
@@ -158,12 +160,14 @@ main (int argc, char *argv[]){
 	cmd.AddValue("output", "Output file", output);
 	cmd.AddValue("tlv_publish_time", "Time at which node 0 will publish a TLV", tlv_publish);
 	cmd.AddValue("tlv_size", "Number of bytes in the tlv", tlv_size);
+	cmd.AddValue("lossrate","The average probability with which the link will drop packets",lossrate);
 	cmd.Parse (argc, argv);
 
 	if(verbose){
 		LogComponentEnable ("DncpApplication", LOG_LEVEL_INFO);
 		LogComponentEnable ("DncpExample", LOG_LEVEL_INFO);
 	}
+	LogComponentEnable("CsmaNetDevice",LOG_LEVEL_LOGIC);
 
 	srandom(seed);
 
@@ -294,6 +298,8 @@ main (int argc, char *argv[]){
 			Config::ConnectWithoutContext(path, MakeBoundCallback (&Trace_CsmaPkt, stream_all, dev, "MacTxDrop"));
 			strcpy(t, "PhyTxDrop");
 			Config::ConnectWithoutContext(path, MakeBoundCallback (&Trace_CsmaPkt, stream_all, dev, "PhyTxDrop"));
+			strcpy(t, "PhyRxDrop");
+			Config::ConnectWithoutContext(path, MakeBoundCallback (&Trace_CsmaPkt, stream_all, dev, "PhyRxDrop"));
 		}
 		app->SetStartTime(start);
 
@@ -302,6 +308,13 @@ main (int argc, char *argv[]){
 		  char data[tlv_size];
 		  memset(data, 0, tlv_size);
 		  Simulator::Schedule(tlv_publish, &DncpApplication::AddTlv, app, 200, tlv_size, data);
+		}
+
+		if(lossrate){
+			Ptr<RateErrorModel> em = CreateObject<RateErrorModel> ();
+			em->SetAttribute ("ErrorRate", DoubleValue (lossrate));
+			em->SetAttribute ("ErrorUnit", EnumValue (RateErrorModel::ERROR_UNIT_PACKET));
+			Config::Set("/NodeList/*/DeviceList/*/$ns3::CsmaNetDevice/ReceiveErrorModel",PointerValue(em));
 		}
 	}
 

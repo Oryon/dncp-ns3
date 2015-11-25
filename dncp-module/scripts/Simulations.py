@@ -18,6 +18,7 @@ START = 1
 STOP = 200
 TLV_PUBLISH = 100
 TLV_SIZE = 400
+LOSS_RATE= 0.05
 
 THREADS = 15
 
@@ -233,6 +234,9 @@ class Simulation:
             if TLV_PUBLISH >= 0:
                 exe += " --tlv_publish_time="+str(TLV_PUBLISH)+"s "
                 exe += " --tlv_size="+str(TLV_SIZE)
+                
+            if LOSS_RATE >=0 and LOSS_RATE<1:
+                exe += " --lossrate="+str(LOSS_RATE)
 
             ret = os.system(exe)
 
